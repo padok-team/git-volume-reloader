@@ -1,0 +1,83 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app.kubernetes.io/instance: docs
+    app.kubernetes.io/name: docs
+  name: docs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: docs
+      app.kubernetes.io/name: docs
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/instance: docs
+        app.kubernetes.io/name: docs
+    spec:
+      containers:
+      - env:
+        - name: WORKING_DIR
+          value: /docs
+        - name: PORT
+          value: '80'
+        envFrom:
+        - configMapRef:
+            name: docs
+        - secretRef:
+            name: docs
+        image: 'ghcr.io/padok-team/git-volume-reloader:v0.0.1'
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: webhook
+          initialDelaySeconds: 15
+        name: git-volume-reloader
+        ports:
+          - containerPort: 80
+            name: webhook
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /healthz
+            port: webhook
+          initialDelaySeconds: 15
+        resources: {}
+        volumeMounts:
+          - mountPath: /docs
+            name: shared-volume
+          - mountPath: /root/.ssh/
+            name: ssh-known-hosts
+      - args:
+          - serve
+          - '--dev-addr'
+          - '0.0.0.0:8080'
+        image: 'squidfunk/mkdocs-material:7.2.2'
+        livenessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 15
+        name: mkdocs
+        ports:
+          - containerPort: 8080
+            name: http
+            protocol: TCP
+        readinessProbe:
+          httpGet:
+            path: /
+            port: http
+          initialDelaySeconds: 15
+        resources: {}
+        volumeMounts:
+          - mountPath: /docs
+            name: shared-volume
+      securityContext: {}
+      volumes:
+        - emptyDir: {}
+          name: shared-volume
+        - configMap:
+            name: git-volume-reloader-ssh-known-hosts
+          name: ssh-known-hosts

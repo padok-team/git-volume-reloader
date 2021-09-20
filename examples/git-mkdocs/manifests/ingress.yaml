@@ -1,0 +1,53 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    ingress.kubernetes.io/ssl-redirect: 'true'
+  labels:
+    app.kubernetes.io/instance: docs
+    app.kubernetes.io/name: docs
+  name: docs
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: docs.padok.cloud
+    http:
+      paths:
+      - path: /
+        backend:
+          service:
+            name: docs
+            port:
+              number: 80
+        pathType: ImplementationSpecific
+  tls:
+  - hosts:
+    - docs.padok.cloud
+    secretName: docs-cert
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  annotations:
+    ingress.kubernetes.io/ssl-redirect: 'true'
+  labels:
+    app.kubernetes.io/instance: docs
+    app.kubernetes.io/name: docs
+  name: docs-webhook
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: docs.padok.cloud
+      http:
+        paths:
+        - path: /webhook
+          backend:
+            service:
+              name: docs-webhook
+              port:
+                number: 80
+          pathType: Exact
+  tls:
+  - hosts:
+    - docs.padok.cloud
+    secretName: docs-cert
