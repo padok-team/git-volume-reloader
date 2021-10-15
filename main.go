@@ -7,8 +7,10 @@ import (
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
+	"github.com/go-git/go-git/v5/plumbing/transport"
 	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"github.com/go-playground/webhooks/v6/github"
+	gitHttp "github.com/go-git/go-git/v5/plumbing/transport/http"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -18,19 +20,25 @@ func main() {
 		githubSecret  = os.Getenv("GITHUB_SECRET")
 		gitProvider   = os.Getenv("GIT_PROVIDER")
 		repositoryURL = os.Getenv("REPOSITORY_URL")
-		sshPrivateKey = []byte(os.Getenv("SSH_PRIVATE_KEY"))
+		username			= os.Getenv("USERNAME")
+		password			= os.Getenv("PASSWORD")
+		sshPrivateKey = os.Getenv("SSH_PRIVATE_KEY")
 		workingDir    = os.Getenv("WORKING_DIR")
 	)
 
-	if err := checkoutGitRepository(sshPrivateKey, workingDir, repositoryURL, gitBranch); err != nil {
+	auth, err := setAuth(username, password, sshPrivateKey)
+	if err != nil {
+		log.Fatalf("failed to set authentication with username %q, password %q, sshPrivateKey %q: %w", username, password, sshPrivateKey, err)
+	}
+
+	if err := checkoutGitRepository(auth, workingDir, repositoryURL, gitBranch); err != nil {
 		log.Fatalf("failed to checkout branch %q of repository %q into directory %q: %w", gitBranch, repositoryURL, workingDir, err)
 	}
 
 	var webhookHandler http.HandlerFunc
-	var err error
 	switch gitProvider {
 	case "github":
-		webhookHandler, err = handleGithubWebhook(gitBranch, githubSecret, workingDir, sshPrivateKey)
+		webhookHandler, err = handleGithubWebhook(gitBranch, githubSecret, workingDir, auth)
 		if err != nil {
 			log.Fatalf("failed to prepare webhook: %w", err)
 		}
@@ -47,14 +55,24 @@ func main() {
 	}
 }
 
-func checkoutGitRepository(sshPrivateKey []byte, workingDir, repositoryURL, gitBranch string) error {
-	publicKeys, err := ssh.NewPublicKeys("git", sshPrivateKey, "")
-	if err != nil {
-		return fmt.Errorf("failed to generate public keys: %w", err)
+func setAuth(username string, password string, sshPrivateKey string) (transport.AuthMethod, error) {
+	if sshPrivateKey != "" {
+		publicKeys, err := ssh.NewPublicKeys("git", []byte(sshPrivateKey), "")
+		if err != nil {
+			return nil, fmt.Errorf("failed to generate public keys: %w", err)
+		}
+		return publicKeys, nil
 	}
+	auth := &gitHttp.BasicAuth{
+		Username: username,
+		Password: password,
+	}
+	return auth, nil
+}
 
+func checkoutGitRepository(auth transport.AuthMethod, workingDir, repositoryURL, gitBranch string) error {
 	cloneOptions := git.CloneOptions{
-		Auth: publicKeys,
+		Auth: auth,
 		URL:  repositoryURL,
 	}
 	repo, err := git.PlainClone(workingDir, false, &cloneOptions)
@@ -77,7 +95,7 @@ func checkoutGitRepository(sshPrivateKey []byte, workingDir, repositoryURL, gitB
 	return nil
 }
 
-func handleGithubWebhook(gitBranch, githubSecret, workingDir string, sshPrivateKey []byte) (http.HandlerFunc, error) {
+func handleGithubWebhook(gitBranch, githubSecret, workingDir string, auth transport.AuthMethod) (http.HandlerFunc, error) {
 	githubWebhook, err := github.New(github.Options.Secret(githubSecret))
 	if err != nil {
 		return nil, fmt.Errorf("failed to set up GitHub webhook: %w", err)
@@ -101,7 +119,7 @@ func handleGithubWebhook(gitBranch, githubSecret, workingDir string, sshPrivateK
 			return
 		}
 
-		if err := updateRepository(workingDir, sshPrivateKey); err != nil {
+		if err := updateRepository(workingDir, auth); err != nil {
 			log.Errorf("failed to update repository: %w", err)
 			http.Error(w, "Internal error", http.StatusInternalServerError)
 			return
@@ -113,12 +131,7 @@ func handleGithubWebhook(gitBranch, githubSecret, workingDir string, sshPrivateK
 	return handler, nil
 }
 
-func updateRepository(workingDir string, sshPrivateKey []byte) error {
-	publicKeys, err := ssh.NewPublicKeys("git", sshPrivateKey, "")
-	if err != nil {
-		return fmt.Errorf("failed to generate public keys: %w", err)
-	}
-
+func updateRepository(workingDir string, auth transport.AuthMethod) error {
 	repo, err := git.PlainOpen(workingDir)
 	if err != nil {
 		return fmt.Errorf("repository in %q directory is broken: %w", workingDir, err)
@@ -130,7 +143,7 @@ func updateRepository(workingDir string, sshPrivateKey []byte) error {
 	}
 
 	pullOptions := git.PullOptions{
-		Auth:       publicKeys,
+		Auth:       auth,
 		RemoteName: "origin",
 	}
 	if err := worktree.Pull(&pullOptions); err != nil {
