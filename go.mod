@@ -1,6 +1,6 @@
 module github.com/padok-team/git-volume-reloader
 
-go 1.16
+go 1.19
 
 require (
 	github.com/go-git/go-git/v5 v5.4.2
