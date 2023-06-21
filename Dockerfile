@@ -14,7 +14,7 @@ RUN CGO_ENABLED=0 go build -o=git-volume-reloader
 
 # ================================================
 
-FROM alpine/git:v2.30.2
+FROM alpine/git:v2.40.1
 
 LABEL org.opencontainers.image.source=https://github.com/padok-team/git-volume-reloader
 
