@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"sync"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
@@ -23,7 +24,7 @@ func main() {
 	)
 
 	if err := checkoutGitRepository(sshPrivateKey, workingDir, repositoryURL, gitBranch); err != nil {
-		log.Fatalf("failed to checkout branch %q of repository %q into directory %q: %w", gitBranch, repositoryURL, workingDir, err)
+		log.Fatalf("failed to checkout branch %q of repository %q into directory %q: %v", gitBranch, repositoryURL, workingDir, err)
 	}
 
 	var webhookHandler http.HandlerFunc
@@ -32,7 +33,7 @@ func main() {
 	case "github":
 		webhookHandler, err = handleGithubWebhook(gitBranch, githubSecret, workingDir, sshPrivateKey)
 		if err != nil {
-			log.Fatalf("failed to prepare webhook: %w", err)
+			log.Fatalf("failed to prepare webhook: %v", err)
 		}
 	default:
 		log.Fatalf("unknown git provider %q; current implementation only accepts \"github\"", gitProvider)
@@ -43,7 +44,7 @@ func main() {
 
 	log.Println("Listening for requests on port 80...")
 	if err := http.ListenAndServe(":80", nil); err != nil {
-		log.Fatalf("failed to start HTTP server: %w", err)
+		log.Fatalf("failed to start HTTP server: %v", err)
 	}
 }
 
@@ -83,26 +84,37 @@ func handleGithubWebhook(gitBranch, githubSecret, workingDir string, sshPrivateK
 		return nil, fmt.Errorf("failed to set up GitHub webhook: %w", err)
 	}
 
+	var mu sync.Mutex
+
 	handler := func(w http.ResponseWriter, r *http.Request) {
 		payload, err := githubWebhook.Parse(r, github.PushEvent)
 		switch err {
 		case nil: // no error, do nothing.
 		case github.ErrEventNotFound:
 			log.Info("webhook called for non-existing event, skipping")
+			return
 		default:
-			log.Errorf("could not parse payload: %q", err)
+			log.Errorf("could not parse payload: %v", err)
 			http.Error(w, "Invalid payload", http.StatusBadRequest)
 			return
 		}
 
-		pushEvent := payload.(github.PushPayload)
+		pushEvent, ok := payload.(github.PushPayload)
+		if !ok {
+			log.Errorf("unexpected webhook payload type %T", payload)
+			http.Error(w, "Invalid payload", http.StatusBadRequest)
+			return
+		}
 		if pushEvent.Ref != gitBranch {
-			log.Info("webhook called for ref %q, skipping", pushEvent.Ref)
+			log.Infof("webhook called for ref %q, skipping", pushEvent.Ref)
 			return
 		}
 
+		mu.Lock()
+		defer mu.Unlock()
+
 		if err := updateRepository(workingDir, sshPrivateKey); err != nil {
-			log.Errorf("failed to update repository: %w", err)
+			log.Errorf("failed to update repository: %v", err)
 			http.Error(w, "Internal error", http.StatusInternalServerError)
 			return
 		}
@@ -129,12 +141,15 @@ func updateRepository(workingDir string, sshPrivateKey []byte) error {
 		return fmt.Errorf("repository in %q directory is broken: %w", workingDir, err)
 	}
 
+	// Force allows non-fast-forward updates (e.g. force-pushes) instead of
+	// failing the pull and leaving the volume on a stale commit.
 	pullOptions := git.PullOptions{
 		Auth:       publicKeys,
 		RemoteName: "origin",
+		Force:      true,
 	}
-	if err := worktree.Pull(&pullOptions); err != nil {
-		return fmt.Errorf("failed to pull repository: %q", err)
+	if err := worktree.Pull(&pullOptions); err != nil && err != git.NoErrAlreadyUpToDate {
+		return fmt.Errorf("failed to pull repository: %w", err)
 	}
 
 	return nil
